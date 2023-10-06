@@ -9,6 +9,11 @@ import pybullet_data
 from collections import namedtuple
 from attrdict import AttrDict
 
+from lively import OrientationLivelinessObjective, Solver, Translation, Rotation,Transform,SmoothnessMacroObjective, Size, PositionLivelinessObjective, CollisionAvoidanceObjective, JointLimitsObjective, BoxShape, CollisionSettingInfo, PositionMatchObjective,ScalarRange
+from lxml import etree
+
+
+
 ROBOT_URDF_PATH = "./ur_e_description/urdf/ur5e.urdf"
 TABLE_URDF_PATH = os.path.join(pybullet_data.getDataPath(), "table/table.urdf")
 
@@ -16,7 +21,7 @@ class UR5Sim():
   
     def __init__(self, camera_attached=False):
         pybullet.connect(pybullet.GUI)
-        pybullet.setRealTimeSimulation(True)
+        #pybullet.setRealTimeSimulation(True)
         
         self.end_effector_index = 7
         self.ur5 = self.load_robot()
@@ -55,16 +60,18 @@ class UR5Sim():
         indexes = []
         forces = []
 
-        for i, name in enumerate(self.control_joints):
+        for name, pose in joint_angles.items():
             joint = self.joints[name]
-            poses.append(joint_angles[i])
+            poses.append(pose)
             indexes.append(joint.id)
             forces.append(joint.maxForce)
+
+        
 
         pybullet.setJointMotorControlArray(
             self.ur5, indexes,
             pybullet.POSITION_CONTROL,
-            targetPositions=joint_angles,
+            targetPositions=poses,
             targetVelocities=[0]*len(poses),
             positionGains=[0.04]*len(poses), forces=forces
         )
@@ -127,12 +134,62 @@ class UR5Sim():
 def demo_simulation():
     """ Demo program showing how to use the sim """
     sim = UR5Sim()
-    sim.add_gui_sliders()
-    while True:
-        x, y, z, Rx, Ry, Rz = sim.read_gui_sliders()
-        joint_angles = sim.calculate_ik([x, y, z], [Rx, Ry, Rz])
-        sim.set_joint_angles(joint_angles)
+    #sim.add_gui_sliders()
+    # Read the xml file into a string
+    xml_file = ROBOT_URDF_PATH
+    tree = etree.parse(xml_file)
+    xml_string = etree.tostring(tree).decode()
+    goal = {Translation:[1.0,0.0,0.5]}
+    #print(xml_string)
+    # Instantiate a new solver
+    solver = Solver(
+    urdf=xml_string, # Full urdf as a string
+    objectives={
+        # An example objective (smoothness macro)
+        "position": PositionMatchObjective(name="MyPositionMatchObjective", weight=10, link="wrist_3_link"),
+        "smoothness":SmoothnessMacroObjective(name="MySmoothnessObjective",weight=5, joints=True, links=True, origin=True),
+        "positionLiveliness": PositionLivelinessObjective(name="MyLivelinessObjective",link="wrist_3_link",frequency=1,weight=20),
+        
+    },
+    root_bounds=[
+        ScalarRange(value=0.0,delta=0.0),ScalarRange(value=0.0,delta=0.0),ScalarRange(value=0.0,delta=0.0), # Translational, (x, y, z)
+        ScalarRange(value=0.0,delta=0.0),ScalarRange(value=0.0,delta=0.0),ScalarRange(value=0.0,delta=0.0)  # Rotational, (r, p, y)
+    ]
+    )
+    
+    solver.compute_average_distance_table()
+    # Run solve to get a solved state
+    i=0
+    current_time = time.time()
+    #while i < 20:
+    state = solver.solve(goals= {"position": Translation(x=0.47, y=-0.03, z=0.64),
+                                 "positionLiveliness": Size(x=0.11,y=0.05,z=0.05)
+                                 },weights = {},time = current_time)
+        # Log the initial state
+        #print(state.origin.as_dicts())
+    print(state.joints)
+    while True:   
+        sim.set_joint_angles(state.joints)
         sim.check_collisions()
+        pybullet.stepSimulation()
+        delay = 1/30
+        time.sleep(delay)
+        current_time = time.time()
+        state = solver.solve(goals= {"position": Translation(x=0.47, y=-0.03, z=0.64),
+                        "positionLiveliness": Size(x=0.15,y=0.05,z=0.4)
+                        },weights = {},time = current_time)
+        #print(solver.goals)
+        #print(solver)
+
+
+
+
+
+    #while True:
+    #    x, y, z, Rx, Ry, Rz = sim.read_gui_sliders()
+    #    joint_angles = sim.calculate_ik([x, y, z], [Rx, Ry, Rz])
+    #    sim.set_joint_angles(joint_angles)
+    #    sim.check_collisions()
 
 if __name__ == "__main__":
     demo_simulation()
